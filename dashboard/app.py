@@ -327,3 +327,18 @@ with tab3:
     - Change Management (CM) — 1–5 maturity
     - Regulatory Obligation (RO) — binary
     """)
+# ── Keep API warm — ping every 14 minutes ─────────────────────
+import threading
+
+def keep_api_warm():
+    while True:
+        try:
+            requests.get(f"{API_URL}/", timeout=10)
+        except:
+            pass
+        threading.Event().wait(840)  # 14 minutes
+
+if "warmer" not in st.session_state:
+    st.session_state["warmer"] = True
+    t = threading.Thread(target=keep_api_warm, daemon=True)
+    t.start()
