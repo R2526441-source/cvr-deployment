@@ -99,8 +99,9 @@ st.markdown(
     "intelligence with your organisation's context to produce an actionable priority ranking."
 )
 
-tab1, tab2, tab3 = st.tabs([
-    "🔍 Score a CVE", "📋 Batch Triage", "📊 About the Model"
+tab1, tab2, tab3, tab4 = st.tabs([
+    "🔍 Score a CVE", "📋 Batch Triage",
+    "📂 Risk Register Upload", "📊 About the Model"
 ])
 
 # ── TAB 1: Single CVE ─────────────────────────────────────────
@@ -284,9 +285,242 @@ with tab2:
                         margin=dict(t=50,b=60)
                     )
                     st.plotly_chart(fig2, use_container_width=True)
-
-# ── TAB 3: About ──────────────────────────────────────────────
+# ── TAB 3: Risk Register Upload ───────────────────────────────
 with tab3:
+    st.subheader("📂 Upload Organisation Risk Register")
+    st.markdown(
+        "Upload your vulnerability scan export as a **CSV or Excel file**. "
+        "The CVR model will score every CVE against your organisation context "
+        "from the sidebar and return a fully ranked remediation list you can download."
+    )
+
+    # ── Template download ─────────────────────────────────────
+    with st.expander("📥 Download upload template first"):
+        st.markdown("Your file must have at least a `CVE_ID` column. "
+                    "All other columns are optional and will be preserved.")
+        template_df = pd.DataFrame({
+            "CVE_ID"     : ["CVE-2023-44487","CVE-2021-44228","CVE-2022-30190"],
+            "Asset_Name" : ["Web Server 01","ERP System","Workstation-05"],
+            "Department" : ["IT","Finance","HR"],
+            "Notes"      : ["Apache HTTP","Log4j","MSDT Follina"],
+        })
+        csv_template = template_df.to_csv(index=False)
+        st.download_button(
+            label="⬇️ Download CSV Template",
+            data=csv_template,
+            file_name="cvr_upload_template.csv",
+            mime="text/csv"
+        )
+        st.dataframe(template_df, hide_index=True)
+
+    st.markdown("---")
+
+    # ── File uploader ─────────────────────────────────────────
+    uploaded_file = st.file_uploader(
+        "Upload your risk register",
+        type=["csv", "xlsx", "xls"],
+        help="CSV or Excel file with a CVE_ID column"
+    )
+
+    if uploaded_file:
+        # ── Parse uploaded file ───────────────────────────────
+        try:
+            if uploaded_file.name.endswith(".csv"):
+                upload_df = pd.read_csv(uploaded_file)
+            else:
+                upload_df = pd.read_excel(uploaded_file)
+        except Exception as e:
+            st.error(f"Could not read file: {e}")
+            upload_df = None
+
+        if upload_df is not None:
+            # ── Find CVE ID column (flexible naming) ──────────
+            cve_col = None
+            for col in upload_df.columns:
+                if col.upper().replace(" ","_") in [
+                    "CVE_ID","CVE","CVEID","CVE_NUMBER","VULNERABILITY_ID"
+                ]:
+                    cve_col = col
+                    break
+
+            if not cve_col:
+                st.error(
+                    "❌ Could not find a CVE ID column. "
+                    "Please name your CVE column: CVE_ID, CVE, or CVEID."
+                )
+            else:
+                cve_list = upload_df[cve_col].dropna().str.strip().str.upper().tolist()
+                # Remove duplicates, keep order
+                seen = set()
+                cve_list = [c for c in cve_list
+                            if c.startswith("CVE-")
+                            and not (c in seen or seen.add(c))]
+
+                st.success(
+                    f"✅ File loaded: **{len(upload_df)} rows**, "
+                    f"**{len(cve_list)} valid CVE IDs** detected."
+                )
+                st.markdown(f"**Columns found:** {', '.join(upload_df.columns.tolist())}")
+                st.dataframe(upload_df.head(5), hide_index=True)
+
+                # ── Scoring button ────────────────────────────
+                st.markdown("---")
+                col_l, col_r = st.columns([2,1])
+                with col_l:
+                    st.markdown(
+                        f"Ready to score **{len(cve_list)} CVEs** using your "
+                        f"organisation context (AC={AC}, NE={['Air-gapped','Firewall','Internet'][NE]}, "
+                        f"TA={TA}y, CM={CM}, RO={'Yes' if RO else 'No'})."
+                    )
+                with col_r:
+                    run_btn = st.button(
+                        "⚡ Run Prioritisation",
+                        type="primary",
+                        use_container_width=True
+                    )
+
+                if run_btn:
+                    payload = {
+                        "items": [
+                            {"cve_id": c, "AC": AC, "NE": NE,
+                             "TA": TA, "CM": CM, "RO": RO}
+                            for c in cve_list
+                        ]
+                    }
+
+                    progress = st.progress(0, text="Scoring CVEs...")
+                    with st.spinner(
+                        f"Fetching live NVD/EPSS/KEV data and scoring "
+                        f"{len(cve_list)} CVEs — this may take up to "
+                        f"{len(cve_list)*2} seconds..."
+                    ):
+                        result, err = call_api("batch", payload)
+                        progress.progress(100, text="Complete!")
+
+                    if err:
+                        st.error(f"API error: {err}")
+                    elif result:
+                        results     = result.get("results", [])
+                        latency     = result.get("latency_ms", "—")
+
+                        # ── Build scored DataFrame ────────────
+                        scored_df = pd.DataFrame([{
+                            "CVE_ID"          : r["cve_id"],
+                            "CVR_Score"       : r.get("cvr_score", 0),
+                            "Priority"        : r.get("priority_label","—"),
+                            "EPSS_Score"      : r.get("epss_score", 0),
+                            "KEV_Confirmed"   : "YES" if r.get("kev_confirmed") else "No",
+                            "PoC_Available"   : "YES" if r.get("poc_available") else "No",
+                            "CVSS_Score"      : r.get("cvss_score","—"),
+                            "Key_Drivers"     : " | ".join(r.get("key_drivers",[])),
+                        } for r in results])
+
+                        # Merge back with original upload columns
+                        upload_df[cve_col] = (
+                            upload_df[cve_col].str.strip().str.upper()
+                        )
+                        final_df = scored_df.merge(
+                            upload_df.rename(columns={cve_col:"CVE_ID"}),
+                            on="CVE_ID", how="left"
+                        )
+
+                        # ── Summary metrics ───────────────────
+                        urgent = scored_df[scored_df["Priority"]=="URGENT"]
+                        defer  = scored_df[scored_df["Priority"]=="DEFER"]
+                        kev_ct = scored_df[scored_df["KEV_Confirmed"]=="YES"]
+
+                        st.markdown("---")
+                        st.subheader("🎯 Prioritised Remediation List")
+
+                        m1,m2,m3,m4 = st.columns(4)
+                        m1.metric("Total CVEs Scored", len(scored_df))
+                        m2.metric("🔴 URGENT", len(urgent))
+                        m3.metric("🟢 DEFER",  len(defer))
+                        m4.metric("⚠️ KEV Confirmed", len(kev_ct))
+
+                        st.markdown(
+                            f"*Scored in {latency}ms — ranked highest risk first. "
+                            f"Red rows require immediate attention.*"
+                        )
+
+                        # ── Styled results table ──────────────
+                        def highlight_priority(row):
+                            if row["Priority"] == "URGENT":
+                                return ["background-color:#FEE2E2"]*len(row)
+                            elif row["KEV_Confirmed"] == "YES":
+                                return ["background-color:#FEF3C7"]*len(row)
+                            return [""]*len(row)
+
+                        st.dataframe(
+                            final_df.style.apply(highlight_priority, axis=1),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+
+                        # ── CVR score bar chart ───────────────
+                        fig = go.Figure(go.Bar(
+                            x=scored_df["CVE_ID"],
+                            y=scored_df["CVR_Score"],
+                            marker_color=[
+                                URGENT_COL if p=="URGENT" else DEFER_COL
+                                for p in scored_df["Priority"]
+                            ],
+                            text=scored_df["CVR_Score"].round(3),
+                            textposition="outside"
+                        ))
+                        fig.add_hline(
+                            y=0.4774, line_dash="dash",
+                            line_color="red",
+                            annotation_text="Urgency threshold"
+                        )
+                        fig.update_layout(
+                            title="CVR Priority Scores — Your Vulnerability Inventory",
+                            xaxis_title="CVE ID",
+                            yaxis_title="CVR Score",
+                            yaxis_range=[0,1.15],
+                            height=420,
+                            xaxis_tickangle=-45
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+
+                        # ── Download buttons ──────────────────
+                        st.markdown("---")
+                        st.subheader("⬇️ Download Results")
+                        col_a, col_b = st.columns(2)
+
+                        with col_a:
+                            csv_out = final_df.to_csv(index=False)
+                            st.download_button(
+                                label="📥 Download Full Results (CSV)",
+                                data=csv_out,
+                                file_name="cvr_prioritised_results.csv",
+                                mime="text/csv",
+                                use_container_width=True
+                            )
+
+                        with col_b:
+                            urgent_csv = final_df[
+                                final_df["Priority"]=="URGENT"
+                            ].to_csv(index=False)
+                            st.download_button(
+                                label="🔴 Download URGENT Only (CSV)",
+                                data=urgent_csv,
+                                file_name="cvr_urgent_only.csv",
+                                mime="text/csv",
+                                use_container_width=True
+                            )
+
+                        st.info(
+                            "💡 **How to use this list:** Address all RED rows "
+                            "first — these are your highest-risk vulnerabilities. "
+                            "Any CVE marked KEV Confirmed should be treated as "
+                            "P1 regardless of your patching cycle. Share the "
+                            "downloaded CSV with your IT team as your "
+                            "prioritised work order."
+                )
+                        
+# ── TAB 4: About ──────────────────────────────────────────────
+with tab4:
     st.subheader("About the CVR Framework")
     st.markdown("""
     The **Contextual Vulnerability Ranking (CVR)** framework is a stacking
