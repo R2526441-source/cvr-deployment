@@ -16,8 +16,8 @@ st.set_page_config(
 )
 
 # ── Paste your Render URL here after deployment ───────────────
-API_URL = st.secrets.get("API_URL",
-          "https://cvr-api.onrender.com")   # update after Render deploy
+import os
+API_URL = os.environ.get("API_URL", "https://cvr-deployment.onrender.com")   # update after Render deploy
 
 # ── Colour scheme ─────────────────────────────────────────────
 URGENT_COL = "#DC2626"
