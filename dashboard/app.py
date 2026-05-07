@@ -28,7 +28,7 @@ MID_COL    = "#D97706"
 def call_api(endpoint, payload):
     try:
         r = requests.post(f"{API_URL}/{endpoint}",
-                          json=payload, timeout=30)
+                          json=payload, timeout=120)
         r.raise_for_status()
         return r.json(), None
     except Exception as e:
