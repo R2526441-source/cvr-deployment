@@ -380,6 +380,13 @@ with tab3:
                     )
 
                 if run_btn:
+                    # Wake API if sleeping
+                    with st.spinner("Connecting to CVR scoring engine..."):
+                        try:
+                            requests.get(f"{API_URL}/", timeout=60)
+                        except:
+                            pass
+                            
                     payload = {
                         "items": [
                             {"cve_id": c, "AC": AC, "NE": NE,
