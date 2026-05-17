@@ -380,20 +380,51 @@ with tab3:
                     )
 
                 if run_btn:
-                    # Wake API if sleeping
+                        # ── Wake API ──────────────────────────────────────────
                     with st.spinner("Connecting to CVR scoring engine..."):
                         try:
                             requests.get(f"{API_URL}/", timeout=60)
                         except:
                             pass
-                            
-                    payload = {
-                        "items": [
-                            {"cve_id": c, "AC": AC, "NE": NE,
-                             "TA": TA, "CM": CM, "RO": RO}
-                            for c in cve_list
-                        ]
-                    }
+
+                    # ── Build per-asset payload ───────────────────────────
+                    # Use row-level context if columns exist,
+                    # otherwise fall back to sidebar values
+                    has_AC = "AC" in upload_df.columns
+                    has_NE = "NE" in upload_df.columns
+                    has_TA = "TA" in upload_df.columns
+                    has_CM = "CM" in upload_df.columns
+                    has_RO = "RO" in upload_df.columns
+
+                    if any([has_AC, has_NE, has_TA, has_CM, has_RO]):
+                        st.info(
+                            "✅ Per-asset context columns detected in your file. "
+                            "Each CVE will be scored against its specific asset profile. "
+                            "Sidebar values used as fallback for missing fields."
+                        )
+                    else:
+                        st.info(
+                            "ℹ️ No per-asset context columns found. "
+                            "Scoring all CVEs using sidebar organisation profile. "
+                            "Add AC, NE, TA, CM, RO columns to your file for "
+                            "per-asset scoring."
+                        )
+
+                    items = []
+                    for _, row in upload_df.iterrows():
+                        cve_id = str(row.get(cve_col, "")).strip().upper()
+                        if not cve_id.startswith("CVE-"):
+                            continue
+                        items.append({
+                            "cve_id" : cve_id,
+                            "AC"     : int(row["AC"])    if has_AC and not pd.isna(row.get("AC")) else AC,
+                            "NE"     : int(row["NE"])    if has_NE and not pd.isna(row.get("NE")) else NE,
+                            "TA"     : float(row["TA"])  if has_TA and not pd.isna(row.get("TA")) else TA,
+                            "CM"     : int(row["CM"])    if has_CM and not pd.isna(row.get("CM")) else CM,
+                            "RO"     : int(row["RO"])    if has_RO and not pd.isna(row.get("RO")) else RO,
+                        })
+
+                    payload = {"items": items}
 
                     progress = st.progress(0, text="Scoring CVEs...")
                     with st.spinner(
